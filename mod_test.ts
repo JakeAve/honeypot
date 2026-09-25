@@ -1,9 +1,21 @@
 import { assert, assertEquals } from "@std/assert";
-import { type Hit, honeypot, memoryStore, type Use } from "./mod.ts";
+import {
+  type Hit,
+  honeypot,
+  MAX_DELAY_MS,
+  memoryStore,
+  type Use,
+} from "./mod.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const get = (path: string, init?: RequestInit) =>
   new Request(`http://x${path}`, init);
+const post = (path: string, body: string, headers?: Record<string, string>) =>
+  get(path, {
+    method: "POST",
+    body,
+    headers: { "content-length": String(body.length), ...headers },
+  });
 
 Deno.test("unconfigured path returns null", async () => {
   const hp = honeypot();
@@ -41,10 +53,10 @@ Deno.test("posting a served secret to /admin/login records a use and calls onUse
   assert((await form!.text()).includes('name="password"'));
 
   const res = await hp(
-    get("/admin/login", {
-      method: "POST",
-      body: new URLSearchParams({ username: "deploy", password: token }),
-    }),
+    post(
+      "/admin/login",
+      new URLSearchParams({ username: "deploy", password: token }).toString(),
+    ),
     "2.2.2.2",
   );
   assertEquals(res?.status, 401);
@@ -55,10 +67,8 @@ Deno.test("posting a served secret to /admin/login records a use and calls onUse
   assertEquals((await store.list("use")).length, 1);
 
   await hp(
-    get("/admin/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ user: "x", pass: token }),
+    post("/admin/login", JSON.stringify({ user: "x", pass: token }), {
+      "content-type": "application/json",
     }),
     "2.2.2.2",
   );
@@ -77,14 +87,28 @@ Deno.test("login always returns 401 even when onUse throws", async () => {
   await hp(get("/.env"), "1.1.1.1");
   const [{ key: token }] = await store.list("token");
   const res = await hp(
-    get("/admin/login", {
-      method: "POST",
-      body: new URLSearchParams({ password: token }),
-    }),
+    post("/admin/login", new URLSearchParams({ password: token }).toString()),
     "1.1.1.1",
   );
   assertEquals(res?.status, 401);
   assertEquals(await res!.text(), "Invalid credentials");
+});
+
+Deno.test("oversized login body is ignored", async () => {
+  const store = memoryStore();
+  const uses: Use[] = [];
+  const hp = honeypot({ store, onUse: (u) => void uses.push(u) });
+  await hp(get("/.env"), "1.1.1.1");
+  const [{ key: token }] = await store.list("token");
+  const res = await hp(
+    post("/admin/login", new URLSearchParams({ password: token }).toString(), {
+      "content-length": "100000",
+    }),
+    "1.1.1.1",
+  );
+  assertEquals(res?.status, 401);
+  assertEquals((await store.list("use")).length, 0);
+  assertEquals(uses.length, 0);
 });
 
 Deno.test("ban path returns 403 and any later request from that ip returns 403 until banMs elapses", async () => {
@@ -100,10 +124,16 @@ Deno.test("404 rule returns 404 and stores a hit", async () => {
   const store = memoryStore();
   const hp = honeypot({ store, paths: { "/x": "404", "/y": "honeytoken" } });
   assertEquals((await hp(get("/x"), "1.1.1.1"))?.status, 404);
-  await sleep(2); // distinct hit keys
   assertEquals((await hp(get("/y"), "1.1.1.1"))?.status, 404);
   const hits = await store.list<Hit>("hit");
   assertEquals(hits.map((h) => h.value.action).sort(), ["404", "honeytoken"]);
+});
+
+Deno.test("concurrent hits from one ip are both stored", async () => {
+  const store = memoryStore();
+  const hp = honeypot({ store, paths: { "/x": "404" } });
+  await Promise.all([hp(get("/x"), "1.1.1.1"), hp(get("/x"), "1.1.1.1")]);
+  assertEquals((await store.list("hit")).length, 2);
 });
 
 Deno.test("delayMs delays the response by at least that long", async () => {
@@ -111,6 +141,25 @@ Deno.test("delayMs delays the response by at least that long", async () => {
   const start = performance.now();
   await hp(get("/slow"), "1.1.1.1");
   assert(performance.now() - start >= 49);
+});
+
+Deno.test("delayMs is capped at MAX_DELAY_MS", async () => {
+  const realSetTimeout = globalThis.setTimeout;
+  let requested: number | undefined;
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    requested = ms;
+    fn();
+    return 0;
+  }) as unknown as typeof setTimeout;
+  try {
+    const hp = honeypot({
+      paths: { "/slow": { action: "404", delayMs: 999_999 } },
+    });
+    await hp(get("/slow"), "1.1.1.1");
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assertEquals(requested, MAX_DELAY_MS);
 });
 
 Deno.test("cap stops storing after perIpDailyCap hits but still responds", async () => {
@@ -122,7 +171,6 @@ Deno.test("cap stops storing after perIpDailyCap hits but still responds", async
   });
   for (let i = 0; i < 5; i++) {
     assertEquals((await hp(get("/x"), "1.1.1.1"))?.status, 404);
-    await sleep(2); // distinct hit keys
   }
   assertEquals((await store.list("hit")).length, 2);
   assertEquals((await hp(get("/b"), "1.1.1.1"))?.status, 403);

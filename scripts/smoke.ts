@@ -15,10 +15,13 @@ const body = await env.text();
 const token = body.match(/^API_KEY=(.+)$/m)?.[1];
 strictEqual(typeof token, "string");
 
+const form = new URLSearchParams({ username: "admin", password: token! })
+  .toString();
 const login = await hp(
   new Request("http://x/admin/login", {
     method: "POST",
-    body: new URLSearchParams({ username: "admin", password: token! }),
+    headers: { "content-length": String(form.length) },
+    body: form,
   }),
   ip,
 );

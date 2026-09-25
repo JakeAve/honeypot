@@ -77,6 +77,9 @@ export const MAX_DELAY_MS = 30_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_LOGIN_VALUES = 10;
+const MAX_LOGIN_VALUE_LENGTH = 64; // bait secrets are at most 40
+const MAX_LOGIN_BODY = 16_384;
+const MAX_IP_LENGTH = 45; // IPv6
 
 const LOGIN_FORM = `<!doctype html>
 <title>Sign in</title>
@@ -109,8 +112,14 @@ async function safely<T>(
   }
 }
 
-/** Up to {@linkcode MAX_LOGIN_VALUES} top-level string values from a form-encoded or JSON body. */
+/**
+ * Up to {@linkcode MAX_LOGIN_VALUES} short top-level string values from a
+ * form-encoded or JSON body. Bodies without a `content-length` or over
+ * {@linkcode MAX_LOGIN_BODY} bytes are not read.
+ */
 async function loginValues(req: Request): Promise<string[]> {
+  const length = req.headers.get("content-length");
+  if (!length || !(Number(length) <= MAX_LOGIN_BODY)) return [];
   try {
     const raw = await req.text();
     const parsed: unknown = req.headers.get("content-type")?.includes("json")
@@ -118,7 +127,9 @@ async function loginValues(req: Request): Promise<string[]> {
       : Object.fromEntries(new URLSearchParams(raw));
     if (typeof parsed !== "object" || parsed === null) return [];
     return Object.values(parsed)
-      .filter((v): v is string => typeof v === "string")
+      .filter((v): v is string =>
+        typeof v === "string" && v.length <= MAX_LOGIN_VALUE_LENGTH
+      )
       .slice(0, MAX_LOGIN_VALUES);
   } catch {
     return [];
@@ -129,7 +140,9 @@ async function loginValues(req: Request): Promise<string[]> {
  * Builds the middleware. Call the returned handler first in your server:
  * it returns a `Response` for trap paths and banned ips, or `null` to fall
  * through to the app. Pass `ip` when the runtime knows it; otherwise the
- * first `x-forwarded-for` entry is used.
+ * first `x-forwarded-for` entry is used. That fallback is only safe behind a
+ * proxy that overwrites `x-forwarded-for`; otherwise pass the socket ip, or a
+ * client can name any ip and get it banned.
  */
 export function honeypot(
   options: Options = {},
@@ -141,8 +154,8 @@ export function honeypot(
   const store = options.store ?? memoryStore();
 
   return async (req, ip) => {
-    ip ??= req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
-      "unknown";
+    ip ||= req.headers.get("x-forwarded-for")?.split(",")[0].trim()
+      .slice(0, MAX_IP_LENGTH) || "unknown";
     if (await store.get("ban", ip) !== undefined) return text(403, "Forbidden");
 
     const path = new URL(req.url).pathname;
@@ -166,14 +179,23 @@ export function honeypot(
       action,
       at,
     };
-    if (record) await store.set("hit", `${at}:${ip}`, hit, ttlMs);
+    if (record) {
+      await store.set(
+        "hit",
+        `${at}:${ip}:${crypto.randomUUID().slice(0, 8)}`,
+        hit,
+        ttlMs,
+      );
+    }
     await safely(options.onHit, hit);
 
     let res: Response;
     if (action === "honeytoken") {
       const b = bait(path, options.canaries);
       if (b && record) {
-        for (const s of b.secrets) await store.set("token", s, hit, ttlMs);
+        await Promise.all(
+          b.secrets.map((s) => store.set("token", s, hit, ttlMs)),
+        );
       }
       res = b ? text(200, b.body, b.contentType) : text(404, "Not Found");
     } else if (action === "login") {
@@ -182,7 +204,14 @@ export function honeypot(
           const served = await store.get<Hit>("token", token);
           if (!served) continue;
           const use: Use = { token, ip, at, hit: served };
-          if (record) await store.set("use", `${at}:${token}`, use, ttlMs);
+          if (record) {
+            await store.set(
+              "use",
+              `${at}:${token}:${crypto.randomUUID().slice(0, 8)}`,
+              use,
+              ttlMs,
+            );
+          }
           await safely(options.onUse, use);
         }
         res = text(401, "Invalid credentials");

@@ -1,7 +1,7 @@
 {
   "name": "@jakeave/honeypot",
   "version": "0.0.1",
-  "description": "Honeytoken middleware for Deno.serve: hand bots unique fake credentials on trap paths, then log where they get used.",
+  "description": "Honeytoken middleware for Deno, Bun and Node: hand bots unique fake credentials on trap paths, then log where they get used.",
   "license": "MIT",
   "exports": {
     ".": "./mod.ts",

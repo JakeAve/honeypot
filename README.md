@@ -21,7 +21,9 @@ npx jsr add @jakeave/honeypot         # Node
 `honeypot(options?)` returns `(req, ip?) => Promise<Response | null>`. Call it
 first: a `Response` means it handled the request, `null` means fall through to
 your app. Pass the client ip when the runtime gives you one; without it the
-first `x-forwarded-for` entry is used.
+first `x-forwarded-for` entry is used. That fallback is only safe behind a proxy
+that overwrites `x-forwarded-for`; otherwise pass the socket ip, or a client can
+name any ip and get it banned.
 
 Deno:
 
