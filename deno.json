@@ -3,7 +3,10 @@
   "version": "0.0.1",
   "description": "Honeytoken middleware for Deno.serve: hand bots unique fake credentials on trap paths, then log where they get used.",
   "license": "MIT",
-  "exports": "./mod.ts",
+  "exports": {
+    ".": "./mod.ts",
+    "./kv": "./kv.ts"
+  },
   "tasks": {
     "setup": "git config core.hooksPath .githooks && chmod +x .githooks/pre-commit .githooks/pre-push",
     "check": "deno fmt --check && deno lint && deno check .",
