@@ -1,8 +1,9 @@
 /**
- * Honeytoken middleware for `Deno.serve` (or any `Request` → `Response`
- * server). Trap paths bots scan for (`/.env`, `/.git/config`, ...) get fake
- * credentials unique to that request; a fake login records when one comes
- * back. Passive only: nothing here grants access or contacts the requester.
+ * Honeytoken middleware for any `Request` → `Response` server: `Deno.serve`,
+ * `Bun.serve`, or Node behind a fetch-style adapter. Trap paths bots scan for
+ * (`/.env`, `/.git/config`, ...) get fake credentials unique to that request;
+ * a fake login records when one comes back. Passive only: nothing here
+ * grants access or contacts the requester.
  *
  * @module
  */
